@@ -34,6 +34,8 @@ my $agents = {
     "стажер стажер стажер" => 2121
 };
 
+Rplus::Model::Realty::Manager->delete_objects(where => [owner_info => { ne => undef }]);
+
 if (open(my $fh, '<:encoding(UTF-8)', $filename)) {
     my $string = '';
     my $start = 0;
