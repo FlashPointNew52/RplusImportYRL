@@ -182,6 +182,7 @@ sub parseOffer {
                 if($category =~ /agency/){
                     $data->{agent_id} = getAgent($agent, $organiz);
                 }
+                $data->{account_id} = 319;
                 $data->{owner_phones} = \@phones;
                 next;
             }
