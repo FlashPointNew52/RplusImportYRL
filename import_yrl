@@ -5,9 +5,15 @@ use FindBin;
 use lib "$FindBin::Bin/../lib";
 use DateTime::Format::Strptime;
 use Data::Dumper;
-use Rplus::Model::User::Manager;
-use Rplus::Model::Account::Manager;
 use Rplus::Model::Realty::Manager;
+$Data::Dumper::Useqq = 1;
+
+{ no warnings 'redefine';
+    sub Data::Dumper::qquote {
+        my $s = shift;
+        return "'$s'";
+    }
+}
 
 use Rplus::Util::PhoneNum;
 use Rplus::Util::Config;
@@ -16,6 +22,17 @@ no warnings 'experimental';
 my $filename = 'vigruzka.yrl';
 my $parser = DateTime::Format::Strptime->new( pattern => '%Y-%m-%d %H:%M' );
 my $app_config = Rplus::Util::Config::get_config();
+
+my $agents = {
+    "стажер Стажёр" => 2121,
+    "Стажер Стажер Стажер" => 2121,
+    "Моисеев Данил" => 2121,
+    "Моисеева Наталья Николаевна" => 2119,
+    "Долотина Татьяна Анатольевна" => 2120,
+    "Филлипова Елена Станиславовна" => 2121,
+    "Елькин Сергей  Ефимович" => 2121,
+    "стажер стажер стажер" => 2121
+};
 
 if (open(my $fh, '<:encoding(UTF-8)', $filename)) {
     my $string = '';
@@ -180,7 +197,7 @@ sub parseOffer {
                     $organiz = $1 if($words[$i] =~ /<organization>(.*)<\/organization>/);
                 }
                 if($category =~ /agency/){
-                    $data->{agent_id} = getAgent($agent, $organiz);
+                    $data->{agent_id} = $agents->{$agent};
                 }
                 $data->{account_id} = 319;
                 $data->{owner_phones} = \@phones;
@@ -346,21 +363,4 @@ sub getApType {
         }
     }
     return undef;
-}
-
-sub getAgent {
-    my $agent = shift;
-    my $organization = shift;
-    my $rezult = 319;
-    if($rezult){
-        my $ag = Rplus::Model::User::Manager->get_objects(query => [account_id => $rezult, name => $agent])->[0];
-        if($ag){
-            return $ag->{id};
-        } else{
-            return Rplus::Model::User::Manager->get_objects(query => [account_id => $rezult, name => 'Филлипова Елена Станиславовна'])->[0]->{id};
-        }
-    } else{
-        return undef;
-    }
-
 }
