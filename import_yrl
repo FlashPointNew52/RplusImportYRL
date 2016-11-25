@@ -1,0 +1,365 @@
+#!/usr/bin/env perl
+use v5.18.0;
+use utf8;
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+use DateTime::Format::Strptime;
+use Data::Dumper;
+use Rplus::Model::User::Manager;
+use Rplus::Model::Account::Manager;
+use Rplus::Model::Realty::Manager;
+
+use Rplus::Util::PhoneNum;
+use Rplus::Util::Config;
+no warnings 'experimental';
+
+my $filename = 'vigruzka.yrl';
+my $parser = DateTime::Format::Strptime->new( pattern => '%Y-%m-%d %H:%M' );
+my $app_config = Rplus::Util::Config::get_config();
+
+if (open(my $fh, '<:encoding(UTF-8)', $filename)) {
+    my $string = '';
+    my $start = 0;
+    while (<$fh>) {
+        if($_ =~/<offer internal-id=\"(.*)\">/){
+            $start = 1;
+            $string .= $1 . "\n";
+            next;
+        }
+        if($_ =~/<\/offer>/){
+            $start = 0;
+            $string .= "</offer>\n";
+            parseOffer($string);
+            $string = '';
+        }
+        if($start){
+            $string .= $_;
+        }
+    }
+} else {
+  warn "Could not open file '$filename' $!";
+}
+
+sub parseOffer {
+    my @words = split /\n/, shift;
+    if (!Rplus::Model::Realty::Manager->get_objects_count(query => [owner_info => $words[0]])){
+        my $data = {};
+        $data->{owner_info} = $words[0];
+        for(my $i = 1; $i < scalar @words; ++$i){
+            if($words[$i] =~ /<type>(.*)<\/type>/){
+                if((lc $1) =~ /прод/){
+                    $data->{offer_type_code} = 'sale';
+                } else{
+                    $data->{offer_type_code} = 'rent';
+                }
+                next;
+            } elsif($words[$i] =~ /<category>(.*)<\/category>/ || $words[$i] =~ /<commercial-type>(.*)<\/commercial-type>/ ){
+                $data->{type_code} = getType($1);
+                next;
+            } elsif($words[$i] =~ /<creation-date>(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}).*<\/creation-date>/){
+                $data->{add_date} = $parser->parse_datetime("$1-$2-$3 $4:$5");
+                next;
+            } elsif($words[$i] =~ /<last-update-date>(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}).*<\/last-update-date>/){
+                $data->{change_date} = $parser->parse_datetime("$1-$2-$3 $4:$5");
+                next;
+            } elsif($words[$i] =~ /<location>/){
+                while($words[$i] !~ /<\/location>/){
+                    $i++;
+                    $data->{locality} .= $1 if($words[$i] =~ /<region>(.*)<\/region>/);
+                    $data->{locality} .= ', '.$1 if($words[$i] =~ /<locality-name>(.*)<\/locality-name>/);
+                    $data->{address} = $1 if($words[$i] =~ /<address>(.*)<\/address>/);
+                }
+                next;
+            } elsif($words[$i] =~ /<area>/){
+                while($words[$i] !~ /<\/area>/){
+                    $i++;
+                    if($words[$i] =~ /<value>(.*)<\/value>/){
+                        my $temp = $1;
+                        $temp =~ s/,/./g;
+                        $data->{square_total} = $temp;
+                    }
+                }
+                next;
+            } elsif($words[$i] =~ /<living-space>/){
+                while($words[$i] !~ /<\/living-space>/){
+                    $i++;
+                    if($words[$i] =~ /<value>(.*)<\/value>/){
+                        my $temp = $1;
+                        $temp =~ s/,/./g;
+                        $data->{square_living} = $temp;
+                    }
+                }
+                next;
+            } elsif($words[$i] =~ /<kitchen-space>/){
+                while($words[$i] !~ /<\/kitchen-space>/){
+                    $i++;
+                    if($words[$i] =~ /<value>(.*)<\/value>/){
+                        my $temp = $1;
+                        $temp =~ s/,/./g;
+                        $data->{square_kitchen} = $temp;
+                    }
+                }
+                next;
+            } elsif($words[$i] =~ /<lot-area>/){
+                while($words[$i] !~ /<\/lot-area>/){
+                    $i++;
+                    if($words[$i] =~ /<value>(.*)<\/value>/){
+                        my $temp = $1;
+                        $temp =~ s/,/./g;
+                        $data->{square_land} = $temp;
+                    }
+                    if($words[$i] =~ /<unit>(.*)<\/unit>/){
+                        if($1 =~ /сот/){
+                            $data->{square_land_type} = 'ar';
+                        }else{
+                            $data->{square_land_type} = 'hectare';
+                        }
+                    }
+                }
+                next;
+            } elsif($words[$i] =~ /<quality>(.*)<\/quality>/ || $words[$i] =~ /<renovation>(.*)<\/renovation>/){
+                $data->{condition_id} = getCondition($1);
+                next;
+            } elsif($words[$i] =~ /<description>(.*)<\/description>/){
+                $data->{work_info} = $1;
+                next;
+            } elsif($words[$i] =~ /<new-flat>1<\/new-flat>/){
+                $data->{type_code} = 'apartment_new';
+                next;
+            } elsif($words[$i] =~ /<rooms>(.*)<\/rooms>/){
+                $data->{rooms_count} = $1;
+                next;
+            } elsif($words[$i] =~ /<floor>(.*)<\/floor>/){
+                $data->{floor} = $1;
+                next;
+            } elsif($words[$i] =~ /<floors-total>(.*)<\/floors-total>/){
+                $data->{floors_count} = $1;
+                next;
+            } elsif($words[$i] =~ /<rooms-type>(.*)<\/rooms-type>/){
+                $data->{room_scheme_id} = 4 if((lc $1) =~ /смежн/);
+                $data->{room_scheme_id} = 3 if((lc $1) =~ /раздельн/);
+                next;
+            } elsif($words[$i] =~ /<studio>1<\/studio>/){
+                $data->{room_scheme_id} = 1;
+                next;
+            } elsif($words[$i] =~ /<balcony>(.*)<\/balcony>/){
+                $data->{balcony_id} = getBalcony($1);
+                next;
+            } elsif($words[$i] =~ /<bathroom-unit>(.*)<\/bathroom-unit>/){
+                $data->{bathroom_id} = getBathroom($1);
+                next;
+            } elsif($words[$i] =~ /<building-type>(.*)<\/building-type>/){
+                $data->{house_type_id} = getHouseType($1);
+                next;
+            } elsif($words[$i] =~ /<building-series>(.*)<\/building-series>/){
+                $data->{ap_scheme_id} = getApType($1);
+                next;
+            } elsif($words[$i] =~ /<price>/){
+                while($words[$i] !~ /<\/price>/){
+                    $i++;
+                    $data->{owner_price} = $1/1000 if($words[$i] =~ /<value>(.*)<\/value>/);
+                    if($words[$i] =~ /<period>(.*)<\/period>/){
+                        if($1 =~ /месяц/){
+                            $data->{rent_type} = 'long';
+                        } else{
+                            $data->{rent_type} = 'short';
+                        }
+                    }
+                }
+                next;
+            } elsif($words[$i] =~ /<sales-agent>/){
+                my @phones;
+                my $category;
+                my $organiz;
+                my $agent;
+                while($words[$i] !~ /<\/sales-agent>/){
+                    $i++;
+                    $agent = $1 if($words[$i] =~ /<name>(.*)<\/name>/);
+                    push @phones, Rplus::Util::PhoneNum::parse($1, $app_config->{default_phone_prefix}) if($words[$i] =~ /<phone>(.*)<\/phone>/);
+                    $category = $1 if($words[$i] =~ /<category>(.*)<\/category>/);
+                    $organiz = $1 if($words[$i] =~ /<organization>(.*)<\/organization>/);
+                }
+                if($category =~ /agency/){
+                    $data->{agent_id} = getAgent($agent, $organiz);
+                }
+                $data->{owner_phones} = \@phones;
+                next;
+            }
+        }
+        my $tt = Rplus::Model::Realty->new((map { $_ => $data->{$_} } grep { $_ ne 'photo_url' && $_ ne 'id' && $_ ne 'category_code' && $_ ne 'mediator_company_id'} keys %$data), state_code => 'raw')->save;
+    } else {
+        say "$words[0] already add";
+    }
+}
+
+sub getType {
+    my $text = lc(shift);
+    given ($text) {
+        when (/квартира/ || /flat/) {
+            return "apartment";
+        }
+        when (/дача/ || /cottage/) {
+            return 'dacha';
+        }
+        when (/дом/ || /house/) {
+            return "house";
+        }
+        when (/комната/ || /room/) {
+            return "room";
+        }
+        when (/таунхаус/ || /townhouse/) {
+            return 'townhouse';
+        }
+        when (/участок/ || /lot/) {
+            return 'land';
+        }
+        when (/auto repair/) {
+            return 'autoservice_place';
+        }
+        when (/free purpose/) {
+            return 'gpurpose_place';
+        }
+        when (/manufacturing/) {
+            return 'production_place';
+        }
+        when (/office/) {
+            return 'office_place';
+        }
+        when (/public catering/) {
+            return 'service_place';
+        }
+        when (/retail/) {
+            return 'market_place';
+        }
+        when (/warehouse/) {
+            return 'warehouse_place';
+        }
+    }
+    return undef;
+}
+
+sub getCondition {
+    my $text = lc(shift);
+
+    given ($text) {
+        when (/хор/) {
+            return 11;
+        }
+        when (/отличн/) {
+            return 12;
+        }
+        when (/нормальн/) {
+            return 10;
+        }
+        when (/плох/) {
+            return 3;
+        }
+        when (/треб.*кап.*ремонт/) {
+            return 6;
+        }
+        when (/треб.*косм.*ремонт/) {
+            return 7;
+        }
+        when (/без.*внутр.*отделк/) {
+            return 1;
+        }
+        when (/евро/) {
+            return 4;
+        }
+    }
+    return undef;
+}
+
+sub getBalcony {
+    my $text = lc(shift);
+    given ($text) {
+        when (/балкон/) {
+            return 2;
+        }
+        when (/лоджия/) {
+            return 3;
+        }
+        when (/2 балкона/) {
+            return 7;
+        }
+        when (/2 лоджии/) {
+            return 7;
+        }
+    }
+    return undef;
+}
+
+sub getBathroom {
+    my $text = lc(shift);
+    given ($text) {
+        when (/совмещ/) {
+            return 8;
+        }
+        when (/раздел/) {
+            return 3;
+        }
+        when (/\d+/) {
+            return 5;
+        }
+
+    }
+    return undef;
+}
+
+sub getHouseType {
+    my $text = lc(shift);
+    given ($text) {
+        when (/дерев/) {
+            return 4;
+        }
+        when (/кирпичн/) {
+            return 1;
+        }
+        when (/кирпичн.*монолитн/) {
+            return 7;
+        }
+        when (/монолит/) {
+            return 2;
+        }
+        when (/панельн/) {
+            return 3;
+        }
+    }
+    return undef;
+}
+
+sub getApType {
+    my $text = lc(shift);
+    given ($text) {
+        when (/хрущ/) {
+            return 2;
+        }
+        when (/сталин/) {
+            return 1;
+        }
+        when (/новый/) {
+            return 4;
+        }
+        when (/улучш/) {
+            return 3;
+        }
+    }
+    return undef;
+}
+
+sub getAgent {
+    my $agent = shift;
+    my $organization = shift;
+    my $rezult = 319;
+    if($rezult){
+        my $ag = Rplus::Model::User::Manager->get_objects(query => [account_id => $rezult, name => $agent])->[0];
+        if($ag){
+            return $ag->{id};
+        } else{
+            return Rplus::Model::User::Manager->get_objects(query => [account_id => $rezult, name => 'Филлипова Елена Станиславовна'])->[0]->{id};
+        }
+    } else{
+        return undef;
+    }
+
+}
